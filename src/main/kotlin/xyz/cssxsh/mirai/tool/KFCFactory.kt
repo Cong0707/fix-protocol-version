@@ -51,7 +51,7 @@ public class KFCFactory : EncryptService.Factory {
                 )
                 val about = encrypt.about()
 
-                check("impl.ver" in about) { about }
+                check(impl.ver in about) { about }
 
                 encrypt
             }
