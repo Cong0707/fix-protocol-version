@@ -44,11 +44,16 @@ public class KFCFactory : EncryptService.Factory {
                     servers[impl.ver] ?: throw NoSuchElementException("没有找到对应 ${impl.ver} 的服务配置，${toPath().toUri()}")
                 }
 
-                UnidbgFetchQsign(
+                val encrypt = UnidbgFetchQsign(
                     server = server.base,
                     key = server.key,
                     coroutineContext = serviceSubScope.coroutineContext
                 )
+                val about = encrypt.about()
+
+                check("impl.ver" in about) { about }
+
+                encrypt
             }
             BotConfiguration.MiraiProtocol.ANDROID_WATCH -> throw UnsupportedOperationException(protocol.name)
             BotConfiguration.MiraiProtocol.IPAD -> TLV544Provider()

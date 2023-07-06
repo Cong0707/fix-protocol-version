@@ -40,6 +40,15 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
 
     private val white = mutableListOf<String>()
 
+    public fun about(): String {
+        val response = client.prepareGet(server)
+            .execute().get()
+        val body = json.decodeFromString(DataWrapper.serializer(), response.responseBody)
+        check(body.code == 0) { body.message }
+
+        return json.encodeToString(JsonElement.serializer(), body.data)
+    }
+
     override fun initialize(context: EncryptServiceContext) {
         val device = context.extraArgs[EncryptServiceContext.KEY_DEVICE_INFO]
         val qimei36 = context.extraArgs[EncryptServiceContext.KEY_QIMEI36]
@@ -58,7 +67,7 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
             .addQueryParam("qimei36", qimei36)
             .addQueryParam("key", key)
             .execute().get()
-        val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
+        val body = json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
         logger.debug("Bot(${uin}) init, ${body.message}")
@@ -68,7 +77,7 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
         val response = client.prepareGet("${server}/request_token")
             .addQueryParam("uin", uin.toString())
             .execute().get()
-        val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
+        val body = json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
         logger.debug("Bot(${uin}) requestToken, ${body.message}")
@@ -94,7 +103,7 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
 
             override fun onTextFrame(payload: String, finalFragment: Boolean, rsv: Int) {
                 launch(CoroutineName("SendMessage")) {
-                    val packet = Json.decodeFromString(SsoPacket.serializer(), payload)
+                    val packet = json.decodeFromString(SsoPacket.serializer(), payload)
                     logger.debug("Bot(${uin}) sendMessage <- ${packet.cmd}")
 
                     val result = channel.sendMessage(
@@ -116,7 +125,7 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
                         body = result.data.toUHexString("")
                     )
 
-                    websocket.sendTextFrame(Json.encodeToString(SsoPacket.serializer(), r))
+                    websocket.sendTextFrame(json.encodeToString(SsoPacket.serializer(), r))
                 }
             }
         }
@@ -136,12 +145,12 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
         val response = client.prepareGet("${server}/get_cmd_white_list")
             .addQueryParam("uin", uin.toString())
             .execute().get()
-        val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
+        val body = json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
         logger.debug("Bot(${uin}) getCmdWhiteList, ${body.message}")
 
-        return Json.decodeFromJsonElement(ListSerializer(String.serializer()), body.data)
+        return json.decodeFromJsonElement(ListSerializer(String.serializer()), body.data)
     }
 
     override fun encryptTlv(context: EncryptServiceContext, tlvType: Int, payload: ByteArray): ByteArray? {
@@ -159,12 +168,12 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
             .addQueryParam("salt", salt.toUHexString(""))
             .addQueryParam("data", data)
             .execute().get()
-        val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
+        val body = json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
         logger.debug("Bot(${uin}) energy ${data}, ${body.message}")
 
-        return Json.decodeFromJsonElement(String.serializer(), body.data)
+        return json.decodeFromJsonElement(String.serializer(), body.data)
     }
 
     override fun qSecurityGetSign(
@@ -199,17 +208,22 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
             .addFormParam("seq", seq.toString())
             .addFormParam("buffer", buffer.toUHexString(""))
             .execute().get()
-        val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
+        val body = json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
         logger.debug("Bot(${uin}) getSign ${cmd}, ${body.message}")
 
-        return Json.decodeFromJsonElement(SignResult.serializer(), body.data)
+        return json.decodeFromJsonElement(SignResult.serializer(), body.data)
     }
 
     public companion object {
         @JvmStatic
         internal val logger: MiraiLogger = MiraiLogger.Factory.create(UnidbgFetchQsign::class)
+
+        internal val json = Json {
+            prettyPrint = true
+            isLenient = true
+        }
     }
 }
 
