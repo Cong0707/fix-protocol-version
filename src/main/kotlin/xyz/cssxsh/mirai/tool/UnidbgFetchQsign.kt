@@ -125,7 +125,7 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
                         body = result.data.toUHexString("")
                     )
 
-                    websocket.sendTextFrame(json.encodeToString(SsoPacket.serializer(), r))
+                    websocket.sendContinuationFrame(json.encodeToString(SsoPacket.serializer(), r),true, 0)
                 }
             }
         }
