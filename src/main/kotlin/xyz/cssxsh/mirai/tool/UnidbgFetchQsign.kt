@@ -7,6 +7,8 @@ import kotlinx.serialization.json.*
 import net.mamoe.mirai.internal.spi.*
 import net.mamoe.mirai.utils.*
 import org.asynchttpclient.*
+import org.asynchttpclient.ws.*
+import java.util.concurrent.*
 import kotlin.coroutines.*
 
 @OptIn(MiraiInternalApi::class)
@@ -16,7 +18,7 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
     override val coroutineContext: CoroutineContext =
         coroutineContext + SupervisorJob(coroutineContext[Job]) + CoroutineExceptionHandler { context, exception ->
             when (exception) {
-                is CancellationException -> {
+                is kotlinx.coroutines.CancellationException -> {
                     // ...
                 }
                 else -> {
@@ -34,11 +36,9 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
             .setReadTimeout(180_000)
     )
 
-    private var channel0: EncryptService.ChannelProxy? = null
-
-    private val channel: EncryptService.ChannelProxy get() = channel0 ?: throw IllegalStateException("need initialize")
-
     private val token = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private val white = mutableListOf<String>()
 
     override fun initialize(context: EncryptServiceContext) {
         val device = context.extraArgs[EncryptServiceContext.KEY_DEVICE_INFO]
@@ -46,8 +46,8 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
         val channel = context.extraArgs[EncryptServiceContext.KEY_CHANNEL_PROXY]
 
         register(uin = context.id, androidId = device.androidId.decodeToString(), guid = device.guid.toUHexString(), qimei36 = qimei36)
-
-        channel0 = channel
+        white.addAll(getCmdWhiteList(uin = context.id))
+        channelProxy(uin = context.id, channel = channel)
     }
 
     private fun register(uin: Long, androidId: String, guid: String, qimei36: String) {
@@ -61,7 +61,7 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
         val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
-        logger.debug("Bot(${uin}) register, ${body.message}")
+        logger.debug("Bot(${uin}) init, ${body.message}")
     }
 
     private fun requestToken(uin: Long) {
@@ -71,7 +71,77 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
         val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
-        logger.debug("Bot(${uin}) request_token, ${body.message}")
+        logger.debug("Bot(${uin}) requestToken, ${body.message}")
+    }
+
+    private fun channelProxy(uin: Long, channel: EncryptService.ChannelProxy) {
+        val ws = "${server}/channel_proxy".replace("http", "ws")
+        val listener = object : WebSocketListener {
+            private lateinit var websocket: WebSocket
+
+            override fun onOpen(websocket: WebSocket) {
+                this.websocket = websocket
+                logger.debug("Bot(${uin}) $ws open")
+            }
+
+            override fun onClose(websocket: WebSocket, code: Int, reason: String?) {
+                logger.debug("Bot(${uin}) $ws close")
+            }
+
+            override fun onError(cause: Throwable) {
+                logger.error("Bot(${uin}) $ws", cause)
+            }
+
+            override fun onTextFrame(payload: String, finalFragment: Boolean, rsv: Int) {
+                launch(CoroutineName("SendMessage")) {
+                    val packet = Json.decodeFromString(SsoPacket.serializer(), payload)
+                    logger.debug("Bot(${uin}) sendMessage <- ${packet.cmd}")
+
+                    val result = channel.sendMessage(
+                        remark = packet.remark,
+                        commandName = packet.cmd,
+                        uin = uin,
+                        data = packet.body.hexToBytes()
+                    )
+
+                    if (result == null) {
+                        logger.debug("Bot.${uin} ChannelResult is null")
+                        return@launch
+                    }
+                    logger.debug("Bot(${uin}) sendMessage -> ${result.cmd}")
+                    val r = SsoPacket(
+                        remark = packet.remark,
+                        cmd = result.cmd,
+                        id = packet.id,
+                        body = result.data.toUHexString("")
+                    )
+
+                    websocket.sendTextFrame(Json.encodeToString(SsoPacket.serializer(), r))
+                }
+            }
+        }
+        val websocket = client.prepareGet(ws)
+            .addQueryParam("uin", uin.toString())
+            .execute(
+                WebSocketUpgradeHandler
+                    .Builder()
+                    .addWebSocketListener(listener)
+                    .build()
+            )
+            .get()
+        coroutineContext[Job]?.invokeOnCompletion { websocket.sendCloseFrame() }
+    }
+
+    private fun getCmdWhiteList(uin: Long): List<String> {
+        val response = client.prepareGet("${server}/get_cmd_white_list")
+            .addQueryParam("uin", uin.toString())
+            .execute().get()
+        val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
+        check(body.code == 0) { body.message }
+
+        logger.debug("Bot(${uin}) getCmdWhiteList, ${body.message}")
+
+        return Json.decodeFromJsonElement(ListSerializer(String.serializer()), body.data)
     }
 
     override fun encryptTlv(context: EncryptServiceContext, tlvType: Int, payload: ByteArray): ByteArray? {
@@ -92,7 +162,7 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
         val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
-        logger.debug("Bot(${uin}) custom_energy ${data}, ${body.message}")
+        logger.debug("Bot(${uin}) energy ${data}, ${body.message}")
 
         return Json.decodeFromJsonElement(String.serializer(), body.data)
     }
@@ -107,36 +177,13 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
             if (!token.get() && token.compareAndSet(false, true)) {
                 launch(CoroutineName("RequestToken")) {
                     requestToken(uin = context.id)
-                    while (isActive) {
-                        delay((30 .. 40).random() * 60_000L)
-
-                        requestToken(uin = context.id)
-                    }
                 }
             }
         }
 
-        if (commandName !in CMD_WHITE_LIST) return null
+        if (commandName !in white) return null
 
         val data = sign(uin = context.id, cmd = commandName, seq = sequenceId, buffer = payload)
-
-        launch(CoroutineName("SendMessage")) {
-            for (callback in data.requestCallback) {
-                logger.verbose("Bot(${context.id}) sendMessage ${callback.cmd} ")
-                val result = channel.sendMessage(
-                    remark = "mobileqq.msf.security",
-                    commandName = callback.cmd,
-                    uin = context.id,
-                    data = callback.body.hexToBytes()
-                )
-                if (result == null) {
-                    logger.debug("${callback.cmd} ChannelResult is null")
-                    continue
-                }
-
-                submit(uin = context.id, cmd = result.cmd, callbackId = callback.id, buffer = result.data)
-            }
-        }
 
         return EncryptService.SignResult(
             sign = data.sign.hexToBytes(),
@@ -155,28 +202,12 @@ public class UnidbgFetchQsign(private val server: String, private val key: Strin
         val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
         check(body.code == 0) { body.message }
 
-        logger.debug("Bot(${uin}) sign ${cmd}, ${body.message}")
+        logger.debug("Bot(${uin}) getSign ${cmd}, ${body.message}")
 
         return Json.decodeFromJsonElement(SignResult.serializer(), body.data)
     }
 
-    private fun submit(uin: Long, cmd: String, callbackId: Int, buffer: ByteArray) {
-        val response = client.prepareGet("${server}/submit")
-            .addQueryParam("uin", uin.toString())
-            .addQueryParam("cmd", cmd)
-            .addQueryParam("callbackId", callbackId.toString())
-            .addQueryParam("buffer", buffer.toUHexString(""))
-            .execute().get()
-        val body = Json.decodeFromString(DataWrapper.serializer(), response.responseBody)
-        check(body.code == 0) { body.message }
-
-        logger.debug("Bot(${uin}) submit ${cmd}, ${body.message}")
-    }
-
     public companion object {
-        @JvmStatic
-        internal val CMD_WHITE_LIST = UnidbgFetchQsign::class.java.getResource("cmd.txt")!!.readText().lines()
-
         @JvmStatic
         internal val logger: MiraiLogger = MiraiLogger.Factory.create(UnidbgFetchQsign::class)
     }
@@ -201,16 +232,17 @@ private data class SignResult(
     @SerialName("sign")
     val sign: String = "",
     @SerialName("o3did")
-    val o3did: String = "",
-    @SerialName("requestCallback")
-    val requestCallback: List<RequestCallback> = emptyList()
+    val o3did: String = ""
 )
 
 @Serializable
-private data class RequestCallback(
+@OptIn(ExperimentalSerializationApi::class)
+private data class SsoPacket(
+    @SerialName("remark")
+    val remark: String,
     @SerialName("body")
     val body: String = "",
-    @SerialName("callbackId")
+    @JsonNames("callback_id", "callbackId")
     val id: Int = 0,
     @SerialName("cmd")
     val cmd: String = ""
